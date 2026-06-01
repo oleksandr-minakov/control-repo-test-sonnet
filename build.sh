@@ -66,6 +66,7 @@ if [[ "$KIND" == "image" ]]; then
 FROM ${BASE_IMAGE}
 COPY bin/${COMPONENT} /usr/local/bin/${COMPONENT}
 LABEL org.opencontainers.image.source="https://github.com/oleksandr-minakov/control-repo-test-sonnet"
+LABEL org.opencontainers.image.licenses="Apache-2.0"
 LABEL net.lts.component="${COMPONENT}"
 LABEL net.lts.tag="${TAG}"
 LABEL net.lts.bundle="kubernetes-lts"
