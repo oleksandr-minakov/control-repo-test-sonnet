@@ -1,0 +1,229 @@
+name: Build LTS Kubernetes Components
+
+on:
+  workflow_dispatch:
+    inputs:
+      source_ref:
+        description: 'Source ref to build (default: read from VERSION)'
+        required: false
+        default: ''
+  push:
+    branches: ['release-*']
+    paths: [VERSION]
+
+permissions:
+  contents: read
+  packages: write
+  id-token: write
+
+jobs:
+  resolve:
+    name: Resolve build version
+    runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.resolve.outputs.tag }}
+    steps:
+      - name: Checkout build repo
+        uses: actions/checkout@v4
+
+      - name: Resolve build version and ref
+        id: resolve
+        env:
+          INPUT_SOURCE_REF: ${{ github.event.inputs.source_ref }}
+        run: |
+          set -euo pipefail
+          case "${{ github.event_name }}" in
+            push)
+              [[ -f VERSION ]] || { echo "VERSION file missing"; exit 1; }
+              tag="$(tr -d '[:space:]' < VERSION)"
+              ;;
+            workflow_dispatch)
+              if [[ -n "${INPUT_SOURCE_REF}" ]]; then
+                tag="${INPUT_SOURCE_REF}"
+                [[ "${tag}" == v* ]] || tag="v${tag}"
+              elif [[ -f VERSION ]]; then
+                tag="$(tr -d '[:space:]' < VERSION)"
+              else
+                echo "No source_ref provided and no VERSION file present"; exit 1
+              fi
+              ;;
+          esac
+          echo "tag=${tag}" >> "$GITHUB_OUTPUT"
+          echo "Resolved tag: ${tag}"
+
+  build:
+    name: Build ${{ matrix.component }}
+    needs: resolve
+    runs-on: ubuntu-latest
+    fail-fast: false
+    strategy:
+      matrix:
+        include:
+          - component: kube-apiserver
+            kind: image
+            base_image: gcr.io/distroless/static-debian12:nonroot
+          - component: kube-controller-manager
+            kind: image
+            base_image: gcr.io/distroless/static-debian12:nonroot
+          - component: kube-scheduler
+            kind: image
+            base_image: gcr.io/distroless/static-debian12:nonroot
+          - component: kube-proxy
+            kind: image
+            base_image: registry.k8s.io/build-image/distroless-iptables:v0.6.7
+          - component: kubelet
+            kind: deb
+            base_image: ''
+          - component: kubectl
+            kind: deb
+            base_image: ''
+
+    steps:
+      - name: Checkout build repo
+        uses: actions/checkout@v4
+
+      - name: Free disk space
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc \
+            /usr/local/share/boost "$AGENT_TOOLSDIRECTORY" || true
+          df -h
+
+      - name: Checkout source fork at tag
+        uses: actions/checkout@v4
+        with:
+          repository: oleksandr-minakov/k8s-test-sonnet
+          ref: ${{ needs.resolve.outputs.tag }}
+          path: src
+          fetch-depth: 1
+
+      - name: Detect Go version
+        id: goversion
+        run: |
+          if [[ -f src/.go-version ]]; then
+            GO_VERSION="$(tr -d '[:space:]' < src/.go-version)"
+          else
+            GO_VERSION="1.23.4"
+          fi
+          echo "version=${GO_VERSION}" >> "$GITHUB_OUTPUT"
+          echo "Using Go ${GO_VERSION}"
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: ${{ steps.goversion.outputs.version }}
+          cache: false
+
+      - name: Log in to GHCR
+        if: matrix.kind == 'image'
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build component
+        env:
+          COMPONENT: ${{ matrix.component }}
+          KIND: ${{ matrix.kind }}
+          TAG: ${{ needs.resolve.outputs.tag }}
+          BASE_IMAGE: ${{ matrix.base_image }}
+          GITHUB_RUN_ID: ${{ github.run_id }}
+        run: |
+          chmod +x build.sh
+          EXTRA_ARGS=()
+          [[ -n "${BASE_IMAGE}" ]] && EXTRA_ARGS+=(--base-image "${BASE_IMAGE}")
+          ./build.sh \
+            --component "${COMPONENT}" \
+            --kind "${KIND}" \
+            --tag "${TAG}" \
+            --registry-path "ghcr.io/oleksandr-minakov/lts-k8s/${COMPONENT}" \
+            "${EXTRA_ARGS[@]}" \
+            --source-dir src
+
+      - name: Install Syft
+        run: |
+          curl -sSfL https://raw.githubusercontent.com/anchore/syft/main/install.sh \
+            | sh -s -- -b /usr/local/bin
+
+      - name: Generate SBOM (image)
+        if: matrix.kind == 'image'
+        run: |
+          syft "ghcr.io/oleksandr-minakov/lts-k8s/${{ matrix.component }}:${{ needs.resolve.outputs.tag }}" \
+            -o cyclonedx-json \
+            --file /tmp/sbom-${{ matrix.component }}.cyclonedx.json
+
+      - name: Generate SBOM (deb)
+        if: matrix.kind == 'deb'
+        run: |
+          syft dir:dist/ \
+            -o cyclonedx-json \
+            --file /tmp/sbom-${{ matrix.component }}.cyclonedx.json
+
+      - name: Upload SBOM artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: sbom-${{ matrix.component }}
+          path: /tmp/sbom-${{ matrix.component }}.cyclonedx.json
+          retention-days: 90
+
+      - name: Install Grype
+        run: |
+          curl -sSfL https://raw.githubusercontent.com/anchore/grype/main/install.sh \
+            | sh -s -- -b /usr/local/bin
+
+      - name: Scan with Grype (image)
+        if: matrix.kind == 'image'
+        run: |
+          grype "ghcr.io/oleksandr-minakov/lts-k8s/${{ matrix.component }}:${{ needs.resolve.outputs.tag }}" \
+            -o sarif --file /tmp/grype-${{ matrix.component }}.sarif || true
+
+      - name: Scan with Grype (deb)
+        if: matrix.kind == 'deb'
+        run: |
+          grype "sbom:/tmp/sbom-${{ matrix.component }}.cyclonedx.json" \
+            -o sarif --file /tmp/grype-${{ matrix.component }}.sarif || true
+
+      - name: Upload Grype report
+        uses: actions/upload-artifact@v4
+        with:
+          name: grype-${{ matrix.component }}
+          path: /tmp/grype-${{ matrix.component }}.sarif
+          retention-days: 30
+
+      - name: Install cosign
+        uses: sigstore/cosign-installer@v3
+
+      - name: Sign image (cosign keyless)
+        if: matrix.kind == 'image'
+        env:
+          COSIGN_EXPERIMENTAL: "1"
+        run: |
+          cosign sign --yes \
+            "ghcr.io/oleksandr-minakov/lts-k8s/${{ matrix.component }}:${{ needs.resolve.outputs.tag }}"
+
+      - name: Attest SBOM (cosign)
+        if: matrix.kind == 'image'
+        env:
+          COSIGN_EXPERIMENTAL: "1"
+        run: |
+          cosign attest --yes \
+            --predicate /tmp/sbom-${{ matrix.component }}.cyclonedx.json \
+            --type cyclonedx \
+            "ghcr.io/oleksandr-minakov/lts-k8s/${{ matrix.component }}:${{ needs.resolve.outputs.tag }}"
+
+      - name: Sign deb (cosign blob)
+        if: matrix.kind == 'deb'
+        env:
+          COSIGN_EXPERIMENTAL: "1"
+        run: |
+          DEB_FILE=$(ls dist/*.deb | head -1)
+          cosign sign-blob --yes "${DEB_FILE}" \
+            --bundle "dist/${{ matrix.component }}.bundle.json"
+
+      - name: Upload deb artifact
+        if: matrix.kind == 'deb'
+        uses: actions/upload-artifact@v4
+        with:
+          name: deb-${{ matrix.component }}
+          path: dist/
+          retention-days: 30
