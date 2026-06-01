@@ -136,7 +136,7 @@ jobs:
             --component "${COMPONENT}" \
             --kind "${KIND}" \
             --tag "${TAG}" \
-            --registry-path "ghcr.io/oleksandr-minakov/lts-k8s/${COMPONENT}" \
+            --registry-path "ghcr.io/oleksandr-minakov/control-repo-test-sonnet/${COMPONENT}" \
             "${EXTRA_ARGS[@]}" \
             --source-dir src
 
@@ -148,7 +148,7 @@ jobs:
       - name: Generate SBOM (image)
         if: matrix.kind == 'image'
         run: |
-          syft "ghcr.io/oleksandr-minakov/lts-k8s/${{ matrix.component }}:${{ needs.resolve.outputs.tag }}" \
+          syft "ghcr.io/oleksandr-minakov/control-repo-test-sonnet/${{ matrix.component }}:${{ needs.resolve.outputs.tag }}" \
             -o cyclonedx-json \
             --file /tmp/sbom-${{ matrix.component }}.cyclonedx.json
 
@@ -174,7 +174,7 @@ jobs:
       - name: Scan with Grype (image)
         if: matrix.kind == 'image'
         run: |
-          grype "ghcr.io/oleksandr-minakov/lts-k8s/${{ matrix.component }}:${{ needs.resolve.outputs.tag }}" \
+          grype "ghcr.io/oleksandr-minakov/control-repo-test-sonnet/${{ matrix.component }}:${{ needs.resolve.outputs.tag }}" \
             -o sarif --file /tmp/grype-${{ matrix.component }}.sarif || true
 
       - name: Scan with Grype (deb)
@@ -199,7 +199,7 @@ jobs:
           COSIGN_EXPERIMENTAL: "1"
         run: |
           cosign sign --yes \
-            "ghcr.io/oleksandr-minakov/lts-k8s/${{ matrix.component }}:${{ needs.resolve.outputs.tag }}"
+            "ghcr.io/oleksandr-minakov/control-repo-test-sonnet/${{ matrix.component }}:${{ needs.resolve.outputs.tag }}"
 
       - name: Attest SBOM (cosign)
         if: matrix.kind == 'image'
@@ -209,7 +209,7 @@ jobs:
           cosign attest --yes \
             --predicate /tmp/sbom-${{ matrix.component }}.cyclonedx.json \
             --type cyclonedx \
-            "ghcr.io/oleksandr-minakov/lts-k8s/${{ matrix.component }}:${{ needs.resolve.outputs.tag }}"
+            "ghcr.io/oleksandr-minakov/control-repo-test-sonnet/${{ matrix.component }}:${{ needs.resolve.outputs.tag }}"
 
       - name: Sign deb (cosign blob)
         if: matrix.kind == 'deb'

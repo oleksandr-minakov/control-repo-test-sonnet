@@ -32,7 +32,7 @@ jobs:
           [[ -f VERSION ]] || { echo "VERSION file missing"; exit 1; }
           TAG="$(tr -d '[:space:]' < VERSION)"
           echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
-          echo "image=ghcr.io/oleksandr-minakov/lts-k8s/${{ matrix.component }}:${TAG}" \
+          echo "image=ghcr.io/oleksandr-minakov/control-repo-test-sonnet/${{ matrix.component }}:${TAG}" \
             >> "$GITHUB_OUTPUT"
 
       - name: Log in to GHCR
