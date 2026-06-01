@@ -65,6 +65,7 @@ if [[ "$KIND" == "image" ]]; then
   cat > "${DOCKERFILE}" <<DOCKERFILE_CONTENT
 FROM ${BASE_IMAGE}
 COPY bin/${COMPONENT} /usr/local/bin/${COMPONENT}
+LABEL org.opencontainers.image.source="https://github.com/oleksandr-minakov/control-repo-test-sonnet"
 LABEL net.lts.component="${COMPONENT}"
 LABEL net.lts.tag="${TAG}"
 LABEL net.lts.bundle="kubernetes-lts"
